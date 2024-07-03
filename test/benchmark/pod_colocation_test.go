@@ -75,7 +75,7 @@ func TestPodAffinityHardConstraintSingleNode(t *testing.T) {
 		t.Errorf("Unable to run analysis: %v", err)
 	}
 
-	t.Logf("Simulation stop reason: %v: %v", cc.Report().Status.FailReason.FailType, cc.Report().Status.FailReason.FailMessage)
+	t.Logf("Simulation stop reason: %v: %v", cc.Report().Status.StopReason.FailType, cc.Report().Status.StopReason.FailMessage)
 	nodeDistribution := map[string]int{}
 	for _, pod := range cc.ScheduledPods() {
 		nodeDistribution[pod.Spec.NodeName]++
@@ -172,7 +172,7 @@ func TestPodAffinityHardConstraintManyNodes(t *testing.T) {
 		t.Errorf("Unable to run analysis: %v", err)
 	}
 
-	t.Logf("Simulation stop reason: %v: %v", cc.Report().Status.FailReason.FailType, cc.Report().Status.FailReason.FailMessage)
+	t.Logf("Simulation stop reason: %v: %v", cc.Report().Status.StopReason.FailType, cc.Report().Status.StopReason.FailMessage)
 	nodeZoneDistribution := map[string]int{}
 	for _, pod := range cc.ScheduledPods() {
 		nodeZoneDistribution[nodes[pod.Spec.NodeName].Labels[topologyDomainKey]]++

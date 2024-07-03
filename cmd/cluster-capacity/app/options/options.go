@@ -72,7 +72,7 @@ func (s *ClusterCapacityOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.StringVar(&s.DefaultSchedulerConfigFile, "default-config", s.DefaultSchedulerConfigFile, "Path to JSON or YAML file containing scheduler configuration.")
 
-	fs.BoolVar(&s.Verbose, "verbose", s.Verbose, "Verbose mode")
+	fs.BoolVar(&s.Verbose, "verbose", true, "Verbose mode")
 	fs.StringVarP(&s.OutputFormat, "output", "o", s.OutputFormat, "Output format. One of: json|yaml (Note: output is not versioned or guaranteed to be stable across releases).")
 }
 

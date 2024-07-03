@@ -166,9 +166,9 @@ func TestLimitReached(t *testing.T) {
 		t.Logf("Reason: %v, instances: %v\n", reason, replicas)
 	}
 
-	t.Logf("Stop reason: %v\n", cc.Report().Status.FailReason)
+	t.Logf("Stop reason: %v\n", cc.Report().Status.StopReason)
 
-	if cc.Report().Status.FailReason.FailType != failType {
-		t.Fatalf("Unexpected stop reason occured: %v, expecting: %v", cc.Report().Status.FailReason.FailType, failType)
+	if cc.Report().Status.StopReason.FailType != failType {
+		t.Fatalf("Unexpected stop reason occured: %v, expecting: %v", cc.Report().Status.StopReason.FailType, failType)
 	}
 }

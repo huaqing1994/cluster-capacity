@@ -24,7 +24,6 @@ import (
 	"github.com/lithammer/dedent"
 	"github.com/spf13/cobra"
 
-	v1 "k8s.io/api/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -79,9 +78,9 @@ func NewClusterCapacityCommand() *cobra.Command {
 }
 
 func Validate(opt *options.ClusterCapacityOptions) error {
-	if len(opt.PodSpecFile) == 0 {
-		return fmt.Errorf("Pod spec file is missing")
-	}
+	// if len(opt.PodSpecFile) == 0 {
+	// 	return fmt.Errorf("Pod spec file is missing")
+	// }
 
 	_, present := os.LookupEnv("CC_INCLUSTER")
 	if !present {
@@ -114,10 +113,11 @@ func Run(opt *options.ClusterCapacityOptions) error {
 		return fmt.Errorf("failed to init kube scheduler configuration: %v ", err)
 	}
 
-	err = conf.ParseAPISpec(v1.DefaultSchedulerName)
-	if err != nil {
-		return fmt.Errorf("Failed to parse pod spec file: %v ", err)
-	}
+	// 从集群中获取 Node 和 Pod 信息
+	// err = conf.ParseAPISpec(v1.DefaultSchedulerName)
+	// if err != nil {
+	// 	return fmt.Errorf("Failed to parse pod spec file: %v ", err)
+	// }
 
 	var cfg *restclient.Config
 	if len(conf.Options.Kubeconfig) != 0 {

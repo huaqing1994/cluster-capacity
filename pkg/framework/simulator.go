@@ -71,6 +71,7 @@ type ClusterCapacity struct {
 	status           Status
 	report           *ClusterCapacityReview
 	excludeNodes     sets.String
+	simulatedPodList []*v1.Pod
 
 	// analysis limitation
 	informerStopCh chan struct{}
@@ -81,9 +82,9 @@ type ClusterCapacity struct {
 	// stop the analysis
 	stop      chan struct{}
 	stopMux   sync.RWMutex
-	stopped   bool
 	closedMux sync.RWMutex
 	closed    bool
+	statusMux sync.RWMutex
 }
 
 // capture all scheduled pods with reason why the analysis could not continue
@@ -161,9 +162,9 @@ func (c *ClusterCapacity) Report() *ClusterCapacityReview {
 	if c.report == nil {
 		// Preparation before pod sequence scheduling is done
 		pods := make([]*v1.Pod, 0)
-		pods = append(pods, c.simulatedPod)
+		pods = append(pods, c.simulatedPodList...)
 		c.report = GetReport(pods, c.status)
-		c.report.Spec.Replicas = int32(c.maxSimulated)
+		c.report.Spec.Replicas = int32(len(c.simulatedPodList))
 	}
 
 	return c.report
@@ -190,11 +191,43 @@ func (c *ClusterCapacity) SyncWithClient(client externalclientset.Interface) err
 		return fmt.Errorf("unable to list pods: %v", err)
 	}
 
+loop:
 	for _, item := range podItems.Items {
 		// selector := fmt.Sprintf("status.phase!=%v,status.phase!=%v", v1.PodSucceeded, v1.PodFailed)
 		// field selector are not supported by fake clientset/informers
 		if item.Status.Phase != v1.PodSucceeded && item.Status.Phase != v1.PodFailed {
-			if _, err := c.externalkubeclient.CoreV1().Pods(item.Namespace).Create(context.TODO(), &item, metav1.CreateOptions{}); err != nil {
+			if c.excludeNodes.Has(item.Spec.NodeName) {
+				// excludeNodes 上的 Pod 需要测试调度
+				// 还要排除删除中的 Pod
+				// 还要排除 daemonset 的 Pod
+				// 还要排除 static pod
+				// 还要排除 mirror pod
+				// 还要排除 evicted pod
+				// 还要排除 terminating pod
+				// 还要排除 unknown pod
+				if !item.DeletionTimestamp.IsZero() {
+					continue
+				}
+				// 判断出 Pod 属于 daemonset
+				if item.OwnerReferences != nil {
+					for _, owner := range item.OwnerReferences {
+						if owner.Kind == "DaemonSet" {
+							continue loop
+						}
+					}
+				}
+				pod := item.DeepCopy()
+				pod.Spec.NodeName = ""
+				pod.Spec.SchedulerName = c.defaultSchedulerName
+				if pod.Annotations == nil {
+					pod.Annotations = make(map[string]string)
+				}
+				pod.Annotations[podProvisioner] = c.defaultSchedulerName
+				pod.Status = v1.PodStatus{}
+				pod.Status.Phase = v1.PodPending
+				c.simulatedPodList = append(c.simulatedPodList, pod)
+				// fmt.Printf("\nadd pod: %v/%v\n", pod.Namespace, pod.Name)
+			} else if _, err := c.externalkubeclient.CoreV1().Pods(item.Namespace).Create(context.TODO(), &item, metav1.CreateOptions{}); err != nil {
 				return fmt.Errorf("unable to copy pod: %v", err)
 			}
 		}
@@ -233,6 +266,18 @@ func (c *ClusterCapacity) SyncWithClient(client externalclientset.Interface) err
 	for _, item := range pvcItems.Items {
 		if _, err := c.externalkubeclient.CoreV1().PersistentVolumeClaims(item.Namespace).Create(context.TODO(), &item, metav1.CreateOptions{}); err != nil {
 			return fmt.Errorf("unable to copy pvc: %v", err)
+		}
+	}
+
+	// pv
+	pvItems, err := client.CoreV1().PersistentVolumes().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("unable to list pvs: %v", err)
+	}
+
+	for _, item := range pvItems.Items {
+		if _, err := c.externalkubeclient.CoreV1().PersistentVolumes().Create(context.TODO(), &item, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("unable to copy pv: %v", err)
 		}
 	}
 
@@ -291,23 +336,52 @@ func (c *ClusterCapacity) SyncWithClient(client externalclientset.Interface) err
 		}
 	}
 
+	// CSINode
+	csinodeItems, err := client.StorageV1().CSINodes().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("unable to list csi node: %v", err)
+	}
+
+	for _, item := range csinodeItems.Items {
+		if _, err := c.externalkubeclient.StorageV1().CSINodes().Create(context.TODO(), &item, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("unable to copy csi node: %v", err)
+		}
+	}
+
 	return nil
 }
 
 func (c *ClusterCapacity) postBindHook(updatedPod *v1.Pod) error {
-	c.status.Pods = append(c.status.Pods, updatedPod)
-
-	if c.maxSimulated > 0 && c.simulated >= c.maxSimulated {
-		c.status.StopReason = fmt.Sprintf("LimitReached: Maximum number of pods simulated: %v", c.maxSimulated)
-		c.Close()
-		c.stop <- struct{}{}
+	if !metav1.HasAnnotation(updatedPod.ObjectMeta, podProvisioner) {
 		return nil
 	}
 
-	// all good, create another pod
-	if err := c.createNextPod(); err != nil {
-		return fmt.Errorf("Unable to create next pod for simulated scheduling: %v", err)
+	c.statusMux.Lock()
+	defer c.statusMux.Unlock()
+	c.status.Pods = append(c.status.Pods, updatedPod)
+
+	// fmt.Printf("\nscheduled pod: %v/%v\n", updatedPod.Namespace, updatedPod.Name)
+
+	if len(c.status.Pods) == len(c.simulatedPodList) {
+		// 全部 pod 处理完成，结束
+		// c.status.StopReason = fmt.Sprintf("All Pods are scheduled: %d", len(c.status.Pods))
+		c.Close()
+		c.stopMux.Lock()
+		defer c.stopMux.Unlock()
+		c.stop <- struct{}{}
 	}
+
+	// if c.maxSimulated > 0 && c.simulated >= c.maxSimulated {
+	// 	c.status.StopReason = fmt.Sprintf("LimitReached: Maximum number of pods simulated: %v", c.maxSimulated)
+	// 	c.Close()
+	// 	c.stop <- struct{}{}
+	// 	return nil
+	// }
+
+	// all good, create another pod
+	// if err := c.createNextPod(); err != nil {
+	// 	return fmt.Errorf("Unable to create next pod for simulated scheduling: %v", err)
+	// }
 	return nil
 }
 
@@ -329,14 +403,18 @@ func (c *ClusterCapacity) Update(pod *v1.Pod, podCondition *v1.PodCondition, sch
 
 	// Only for pending pods provisioned by cluster-capacity
 	if stop && metav1.HasAnnotation(pod.ObjectMeta, podProvisioner) {
-		c.status.StopReason = fmt.Sprintf("%v: %v", podCondition.Reason, podCondition.Message)
-		c.Close()
-		// The Update function can be run more than once before any corresponding
-		// scheduler is closed. The behaviour is implementation specific
-		c.stopMux.Lock()
-		defer c.stopMux.Unlock()
-		c.stopped = true
-		c.stop <- struct{}{}
+		c.statusMux.Lock()
+		defer c.statusMux.Unlock()
+		c.status.Pods = append(c.status.Pods, pod)
+
+		if len(c.status.Pods) == len(c.simulatedPodList) {
+			// 全部 pod 完成，结束
+			// c.status.StopReason = fmt.Sprintf("All Pods are scheduled: %d", len(c.status.Pods))
+			c.Close()
+			c.stopMux.Lock()
+			defer c.stopMux.Unlock()
+			c.stop <- struct{}{}
+		}
 	}
 	return nil
 }
@@ -353,6 +431,16 @@ func (c *ClusterCapacity) createNextPod() error {
 	return err
 }
 
+func (c *ClusterCapacity) createAllSimulatedPods() error {
+	for _, pod := range c.simulatedPodList {
+		fmt.Printf("create pod %s/%s\n", pod.Namespace, pod.Name)
+		if _, err := c.externalkubeclient.CoreV1().Pods(pod.Namespace).Create(context.TODO(), pod, metav1.CreateOptions{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *ClusterCapacity) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -367,7 +455,8 @@ func (c *ClusterCapacity) Run() error {
 	// TODO(jchaloup); find a better way how to do this or at least decrease it to <100ms
 	time.Sleep(100 * time.Millisecond)
 	// create the first simulated pod
-	err := c.createNextPod()
+	// err := c.createNextPod()
+	err := c.createAllSimulatedPods()
 	if err != nil {
 		cancel()
 		c.Close()
@@ -398,6 +487,7 @@ func (c *ClusterCapacity) createScheduler(schedulerName string, cc *schedconfig.
 			Handler: cache.ResourceEventHandlerFuncs{
 				UpdateFunc: func(oldObj, newObj interface{}) {
 					if pod, ok := newObj.(*v1.Pod); ok {
+						// fmt.Printf("\nupdated pod %s/%s\n", pod.Namespace, pod.Name)
 						for _, podCondition := range pod.Status.Conditions {
 							if podCondition.Type == v1.PodScheduled {
 								if err := c.Update(pod, &podCondition, schedulerName); err != nil {

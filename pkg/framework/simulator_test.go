@@ -244,11 +244,11 @@ func TestPrediction(t *testing.T) {
 				t.Logf("Reason: %v, instances: %v\n", reason, replicas)
 			}
 
-			t.Logf("Stop reason: %v\n", cc.Report().Status.FailReason)
+			t.Logf("Stop reason: %v\n", cc.Report().Status.StopReason)
 			// time.Sleep(5 * time.Second)
 			//4. check expected number of pods is scheduled and reflected in the resource storage
-			if cc.Report().Status.FailReason.FailType != test.failType {
-				t.Errorf("Unexpected stop reason occured: %v, expecting: %v", cc.Report().Status.FailReason.FailType, test.failType)
+			if cc.Report().Status.StopReason.FailType != test.failType {
+				t.Errorf("Unexpected stop reason occured: %v, expecting: %v", cc.Report().Status.StopReason.FailType, test.failType)
 			}
 
 			cc.Close()
