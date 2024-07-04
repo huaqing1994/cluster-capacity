@@ -198,13 +198,7 @@ loop:
 		if item.Status.Phase != v1.PodSucceeded && item.Status.Phase != v1.PodFailed {
 			if c.excludeNodes.Has(item.Spec.NodeName) {
 				// excludeNodes 上的 Pod 需要测试调度
-				// 还要排除删除中的 Pod
-				// 还要排除 daemonset 的 Pod
-				// 还要排除 static pod
-				// 还要排除 mirror pod
-				// 还要排除 evicted pod
-				// 还要排除 terminating pod
-				// 还要排除 unknown pod
+				// 排除删除中的 Pod
 				if !item.DeletionTimestamp.IsZero() {
 					continue
 				}
@@ -216,6 +210,7 @@ loop:
 						}
 					}
 				}
+				// TODO 排除静态 Pod，排除非 workload 控制的 Pod 等不会被驱逐到其他节点 Pod
 				pod := item.DeepCopy()
 				pod.Spec.NodeName = ""
 				pod.Spec.SchedulerName = c.defaultSchedulerName
